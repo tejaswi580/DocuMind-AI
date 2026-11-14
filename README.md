@@ -126,8 +126,8 @@ DocuMind-AI/
 
 | S.No | Member Name | Contribution |
 |---|---|---|
-| 1 | Member 1 Name | Add actual contribution |
-| 2 | Member 2 Name | Add actual contribution |
+| 1 | Mattaparthi Tejaswi | Backend |
+| 2 | Kanuri Sharmila Sai | Frontend |
 
 ## Limitations
 
