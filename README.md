@@ -1,82 +1,152 @@
-# DocuMind AI — Document-based RAG Study Assistant
+# DocuMind AI
+### Answers Tailored to Your Marks
 
-StudyMate AI lets a user create an account, upload study documents, and ask questions. It retrieves relevant text from the uploaded files and asks an LLM to answer only from that retrieved context.
+## About the Project
+
+DocuMind AI is an AI-powered document-based study assistant developed using Retrieval-Augmented Generation (RAG) and Large Language Models (LLMs).
+
+It helps students prepare for examinations by uploading their study materials and generating answers based on the uploaded documents.
+
+Students can select different answer formats:
+- 2 Marks
+- 5 Marks
+- 10 Marks
+- Bits (MCQs)
 
 ## Features
-- Login and account creation (local SQLite database)
+
+- User Registration and Login using SQLite
 - Upload PDF, DOCX, PPTX, TXT and Markdown files
-- Select 2-mark, 5-mark, 10-mark or Bits (MCQ) answer format
+- Automatic text extraction
 - Text chunking with overlap
-- OpenAI embeddings and cosine-similarity retrieval
-- Grounded answers with source filename and chunk references
+- Embedding generation using Google Gemini
+- Similarity search using cosine similarity
+- Retrieval of the top 5 relevant chunks
+- Marks-based answer generation
+- MCQ generation
+- Download document embeddings as CSV
 
-## Requirements
+## Technologies Used
+
+| Technology | Purpose |
+|---|---|
+| Python | Main programming language |
+| Streamlit | User interface |
+| Google Gemini API | Embedding and answer generation |
+| Gemini Embedding Model | Converts text into numerical vectors |
+| NumPy | Numerical operations and similarity calculation |
+| SQLite | User account management |
+| PyMuPDF | PDF text extraction |
+| python-docx | DOCX text extraction |
+| python-pptx | PPTX text extraction |
+
+## How to Run the Project
+
+### Requirements
 - Python 3.10 or later
-- An OpenAI API key with API access and billing enabled
+- Google Gemini API key
+- Internet connection
 
-## Setup on Windows PowerShell
+### Setup on Windows PowerShell
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/tejaswi580/DocuMind-AI.git
+```
+
+**2. Open the project folder**
+
+```bash
+cd DocuMind-AI
+```
+
+**3. Create a virtual environment**
+
+```bash
+py -m venv .venv
+```
+
+**4. Activate the virtual environment**
 
 ```powershell
-# 1. Extract the ZIP and open the project folder
-cd StudyMate_RAG_Project
-
-# 2. Create a virtual environment
-py -m venv .venv
-
-# 3. Activate it
 .\.venv\Scripts\Activate.ps1
+```
 
-# 4. Install packages
+**5. Install the required packages**
+
+```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# 5. Create your environment file
-Copy-Item .env.example .env
 ```
 
-Open `.env` and replace the example value with your own API key:
+**6. Configure the Gemini API key**
 
-```text
-OPENAI_API_KEY=your_real_key_here
-```
-
-Keep the key private. Do not upload `.env` to GitHub.
-
-## Run
+Set your API key as an environment variable in PowerShell:
 
 ```powershell
+$env:GEMINI_API_KEY="your_api_key_here"
+```
+
+Keep your API key private. Never upload it to GitHub.
+
+**7. Run the application**
+
+```bash
 streamlit run app.py
 ```
 
-The browser opens the StudyMate dashboard. Create an account, log in, upload documents in the sidebar, click **Process documents**, choose an answer format, and ask a question.
+## How RAG Works in This Project
 
-## How RAG works in this project
+1. **Document Loading:** Extract text from uploaded documents.
+2. **Chunking:** Divide the extracted text into smaller chunks using 1000 characters as chunk size and 150 characters as overlap.
+3. **Embedding:** Convert document chunks into numerical vectors using the Gemini embedding model (`gemini-embedding-001`).
+4. **Storage:** Store chunks, embeddings and metadata in Streamlit session state.
+5. **Retrieval:** Convert the user's question into an embedding and compare it with document embeddings using cosine similarity.
+6. **Top-K Selection:** Retrieve the five most relevant chunks.
+7. **Generation:** Send the retrieved context, question and selected answer format to the Gemini chat model.
+8. **Output:** Display the generated answer in the Streamlit interface.
 
-1. **Load:** extract text from supported files.
-2. **Chunk:** split the extracted text into 1,000-character chunks with 150-character overlap.
-3. **Embed:** convert each chunk into a numerical vector using `text-embedding-3-small`.
-4. **Store:** keep vectors, text and file metadata in the current Streamlit session.
-5. **Retrieve:** embed the question and compare it with chunk vectors using cosine similarity. The top 5 chunks are selected.
-6. **Generate:** send only the retrieved passages and the question to `gpt-4o-mini`. A strict prompt tells the model not to use outside knowledge.
-
-## Important limitations
-- Scanned/image-only PDFs need OCR. This starter version extracts selectable PDF text; it does not perform OCR.
-- DOCX, PPTX, TXT and MD are supported. Other file formats need additional parsers.
-- The index is held in the active browser session and is cleared when the session ends or the user logs out. It is not a permanent multi-user vector database.
-- Login is a classroom-project starter, not production-grade authentication. For a real deployment, add HTTPS, rate limiting, email verification, password reset and stronger session management.
-- Retrieval can miss relevant passages. Review the source chunks and tune chunk size, overlap and top_k for your documents.
-- LLM output cannot be guaranteed perfect. The system is designed to reduce unsupported answers by grounding responses in retrieved text and explicitly admitting when context is insufficient.
-
-## Project structure
+## Project Structure
 
 ```text
-StudyMate_RAG_Project/
-├── app.py                 # Streamlit login, dashboard and chat UI
-├── database.py            # SQLite user accounts and password hashing
-├── document_loader.py     # PDF/DOCX/PPTX/TXT/MD text extraction
-├── chunking.py            # Text chunking with overlap
-├── rag_engine.py          # Embeddings, retrieval and LLM answer generation
+DocuMind-AI/
+│
+├── app.py
+├── database.py
+├── document_loader.py
+├── chunking.py
+├── rag_engine.py
 ├── requirements.txt
-├── .env.example
+├── .gitignore
 └── README.md
 ```
+
+## Team Members
+
+| S.No | Member Name | Contribution |
+|---|---|---|
+| 1 | Member 1 Name | Add actual contribution |
+| 2 | Member 2 Name | Add actual contribution |
+
+## Limitations
+
+- Scanned or image-based PDFs require OCR.
+- Internet access is required for Gemini API operations.
+- Embeddings and document chunks are stored temporarily in the active Streamlit session.
+- The current version does not use a permanent vector database.
+- Generated answers may sometimes contain inaccurate information.
+- Login functionality is designed for a student project and is not production-grade authentication.
+
+## Future Enhancements
+
+- Persistent vector database integration
+- OCR support for scanned documents
+- Download generated answers as PDF
+- Interactive MCQ quizzes and scoring
+- Improved retrieval and answer accuracy
+- Permanent document storage for individual users
+
+## Conclusion
+
+DocuMind AI combines RAG and LLM technology to help students prepare examination answers from their own study materials. It provides different answer formats based on marks and makes document-based learning easier and more interactive.
