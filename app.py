@@ -1,10 +1,12 @@
 
 import streamlit as st
 import io
+import hashlib
 import numpy as np
 
 from database import init_db, create_user, verify_user
 from rag_engine import index_documents, answer_question, clear_session_index
+
 
 # Page configuration
 st.set_page_config(
@@ -15,12 +17,32 @@ st.set_page_config(
 
 init_db()
 
+
 # Initialize session state
 if "user" not in st.session_state:
     st.session_state.user = None
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "doc_ready" not in st.session_state:
+    st.session_state.doc_ready = False
+
+if "indexed_fingerprint" not in st.session_state:
+    st.session_state.indexed_fingerprint = None
+
+
+# Generate fingerprint for uploaded documents
+def get_upload_fingerprint(uploaded_files):
+
+    file_hash = hashlib.sha256()
+
+    for uploaded_file in uploaded_files:
+
+        file_hash.update(uploaded_file.name.encode("utf-8"))
+        file_hash.update(uploaded_file.getvalue())
+
+    return file_hash.hexdigest()
 
 
 # Login and Registration Screen
@@ -99,6 +121,8 @@ with st.sidebar:
 
         clear_session_index()
 
+        st.session_state.indexed_fingerprint = None
+
         st.rerun()
 
     st.divider()
@@ -125,15 +149,36 @@ with st.sidebar:
 
         else:
 
-            with st.spinner(
-                "Reading, chunking and creating embeddings..."
-            ):
+            try:
 
-                try:
+                # Check whether documents are already processed
+                current_fingerprint = get_upload_fingerprint(uploads)
 
-                    stats = index_documents(uploads)
+                if (
+                    current_fingerprint
+                    == st.session_state.indexed_fingerprint
+                    and st.session_state.get("doc_ready", False)
+                ):
 
-                    st.session_state.doc_ready = True
+                    st.info(
+                        "These documents are already processed. "
+                        "No new embeddings are required."
+                    )
+
+                else:
+
+                    with st.spinner(
+                        "Reading, chunking and creating embeddings..."
+                    ):
+                        st.session_state.messages = []
+                        stats = index_documents(uploads)
+
+                        # Save fingerprint only after successful processing
+                        st.session_state.indexed_fingerprint = (
+                            current_fingerprint
+                        )
+
+                        st.session_state.doc_ready = True
 
                     st.success(
                         f"Processed {stats['files']} file(s) "
@@ -145,9 +190,9 @@ with st.sidebar:
                         f"| Overlap: {stats['overlap']} characters"
                     )
 
-                except Exception as exc:
+            except Exception as exc:
 
-                    st.error(str(exc))
+                st.error(f"Document processing failed: {exc}")
 
     st.divider()
 
@@ -168,7 +213,7 @@ with st.sidebar:
         st.download_button(
             label="Download Embeddings (CSV)",
             data=csv_buffer.getvalue(),
-            file_name="studymate_embeddings.csv",
+            file_name="documind_embeddings.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -238,7 +283,7 @@ if question:
 
     with st.chat_message("assistant"):
 
-        if not st.session_state.get("doc_ready"):
+        if not st.session_state.get("doc_ready", False):
 
             response = (
                 "Please upload and process your documents "
