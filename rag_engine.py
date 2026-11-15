@@ -1,71 +1,92 @@
 
 import re
 import os
+import html
 from pathlib import Path
 
 import numpy as np
 import streamlit as st
+
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
+from sentence_transformers import SentenceTransformer
 
 from document_loader import extract_text
 from chunking import split_into_chunks
 
 
-# Load API key from the project folder
+# Load API key from project folder
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+
+# Configuration
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
-EMBEDDING_MODEL = "gemini-embedding-001"
-CHAT_MODEL = "gemini-3.5-flash-lite"
+# Local embedding model
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Groq chat model
+CHAT_MODEL = "openai/gpt-oss-120b"
 
 
+# Create Groq client
 def get_client():
-    api_key = os.getenv("GEMINI_API_KEY")
+
+    api_key = os.getenv("GROQ_API_KEY")
 
     if not api_key:
         raise ValueError(
-            "Gemini API key not found. "
-            "Check GEMINI_API_KEY in your .env file."
+            "Groq API key not found. "
+            "Check GROQ_API_KEY in your .env file."
         )
 
-    return genai.Client(api_key=api_key)
+    return Groq(api_key=api_key)
 
 
-def generate_embeddings(client, texts, task_type):
-    vectors = []
-    batch_size = 32
+# Load local embedding model
+@st.cache_resource
+def get_embedding_model():
 
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start:start + batch_size]
+    model = SentenceTransformer(
+        EMBEDDING_MODEL,
+        device="cpu"
+    )
 
-        result = client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=batch,
-            config=types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=768
-            )
-        )
-
-        vectors.extend(
-            embedding.values for embedding in result.embeddings
-        )
-
-    return np.array(vectors, dtype=np.float32)
+    return model
 
 
+# Generate local embeddings
+def generate_embeddings(texts):
+
+    if not texts:
+        return np.empty((0, 384), dtype=np.float32)
+
+    model = get_embedding_model()
+
+    vectors = model.encode(
+        texts,
+        batch_size=32,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True
+    )
+
+    return np.asarray(vectors, dtype=np.float32)
+
+
+# Process and index uploaded documents
 def index_documents(uploaded_files):
-    client = get_client()
 
     all_chunks = []
     metadata = []
 
     for uploaded_file in uploaded_files:
+
         text = extract_text(uploaded_file)
+
+        if not text or not text.strip():
+            continue
 
         chunks = split_into_chunks(
             text,
@@ -74,6 +95,7 @@ def index_documents(uploaded_files):
         )
 
         for number, chunk in enumerate(chunks, start=1):
+
             all_chunks.append(chunk)
 
             metadata.append({
@@ -82,17 +104,18 @@ def index_documents(uploaded_files):
             })
 
     if not all_chunks:
+
         raise ValueError(
             "No readable text was found. "
             "Scanned PDFs need OCR before they can be searched."
         )
 
-    vectors = generate_embeddings(
-        client,
-        all_chunks,
-        "RETRIEVAL_DOCUMENT"
-    )
+    # Generate embeddings locally
+    with st.spinner("Generating local document embeddings..."):
 
+        vectors = generate_embeddings(all_chunks)
+
+    # Store document information in Streamlit session
     st.session_state.rag_chunks = all_chunks
     st.session_state.rag_metadata = metadata
     st.session_state.rag_vectors = vectors
@@ -105,33 +128,41 @@ def index_documents(uploaded_files):
     }
 
 
+# Retrieve relevant document chunks
 def retrieve(question, top_k=5):
+
     if "rag_vectors" not in st.session_state:
+
         raise ValueError(
             "No document index found. Process your documents first."
         )
 
-    client = get_client()
+    if not st.session_state.rag_chunks:
 
-    query_vectors = generate_embeddings(
-        client,
-        [question],
-        "RETRIEVAL_QUERY"
-    )
+        raise ValueError(
+            "No document chunks found. Process your documents again."
+        )
+
+    # Generate embedding for student question
+    query_vectors = generate_embeddings([question])
 
     matrix = st.session_state.rag_vectors
     query = query_vectors[0]
 
+    # Normalize document vectors
     matrix_norm = matrix / (
         np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
     )
 
+    # Normalize query vector
     query_norm = query / (
         np.linalg.norm(query) + 1e-10
     )
 
+    # Calculate cosine similarity
     scores = matrix_norm @ query_norm
 
+    # Select Top-K relevant chunks
     selected = np.argsort(scores)[::-1][
         :min(top_k, len(scores))
     ]
@@ -139,6 +170,7 @@ def retrieve(question, top_k=5):
     passages = []
 
     for index in selected:
+
         passages.append({
             "text": st.session_state.rag_chunks[index],
             "file": st.session_state.rag_metadata[index]["file"],
@@ -149,203 +181,249 @@ def retrieve(question, top_k=5):
     return passages
 
 
-# Fix MCQ formatting even if Gemini puts options on one line
-
+# Format MCQ output
 def format_mcq_output(text):
 
-    # Put every MCQ heading on a separate section
-    text = re.sub(
-        r'\s*(MCQ\s*\d+)',
-        r'\n\n\1\n\n',
-        text,
-        flags=re.IGNORECASE
-    )
+    text = html.unescape(text or "")
+    text = text.replace("\r\n", "\n").strip()
 
-    # Put the question on its own line
-    text = re.sub(
-        r'\s*(Question:)',
-        r'\n\n\1',
-        text,
-        flags=re.IGNORECASE
-    )
+    # Remove excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
-    # Put each option A, B, C, D on a separate line
+    # Normalize option formatting
     text = re.sub(
-        r'\s+([A-D])\)\s*',
-        r'\n\n\1) ',
+        r"(?m)^\s*([A-Da-d])[).]\s*",
+        lambda match: f"{match.group(1).upper()}) ",
         text
     )
-
-    # Keep answer key and explanations in separate sections
-    text = re.sub(
-        r'\s*(ANSWER KEY)',
-        r'\n\nANSWER KEY\n\n',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = re.sub(
-        r'\s*(EXPLANATIONS)',
-        r'\n\nEXPLANATIONS\n\n',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # Clean excessive blank lines
-    text = re.sub(r'\n{3,}', '\n\n', text)
 
     return text.strip()
 
 
-
+# Generate answers based on selected answer type
 def answer_question(question, answer_type):
-    client = get_client()
 
+    # Retrieve Top-5 relevant chunks
     passages = retrieve(question, top_k=5)
 
+    # Prepare document context
     context = "\n\n".join(
         f"DOCUMENT: {p['file']} | CHUNK: {p['chunk']}\n{p['text']}"
         for p in passages
     )
 
+    # Answer formats
     formats = {
-        "2 Marks": (
-            "Give a concise answer suitable for a 2-mark exam "
-            "question, usually 2-4 key points or a short paragraph."
-        ),
 
-        "5 Marks": (
-            "Give a well-organized answer suitable for a 5-mark "
-            "exam question, with a short introduction and "
-            "4-6 important points."
-        ),
+        "2 Marks": """
+Give a concise answer suitable for a 2-mark examination question.
 
-        "10 Marks": (
-            "Give a detailed, structured answer suitable for a "
-            "10-mark exam question, with headings, explanation, "
-            "and examples only if supported by the context."
-        ),
+TARGET LENGTH:
+Approximately 40-60 words, depending on the available context.
 
-        "Bits (MCQs)": """
-Generate exactly 5 multiple-choice questions using ONLY
-the uploaded document context.
+Instructions:
+- Start with a clear definition or direct answer.
+- Include 2-4 important points.
+- Use simple and clear language.
+- Avoid unnecessary explanations.
+""",
 
-STRICT OUTPUT FORMAT:
+        "5 Marks": """
+Give a well-organized answer suitable for a 5-mark examination question.
 
-MCQ 1
+TARGET LENGTH:
+Approximately 150-200 words, depending on the available context.
 
-Question: Write the first question here?
+Follow this structure:
+1. Introduction or definition.
+2. Explain the important points.
+3. Include relevant features, types or steps.
+4. Add an example if available in the document.
+5. End with a short conclusion.
 
-A) First option
-B) Second option
-C) Third option
-D) Fourth option
+Instructions:
+- Explain every important point in 2-3 meaningful sentences.
+- Use suitable headings and subheadings.
+- Do not provide only keywords or lists.
+""",
 
-MCQ 2
+        "10 Marks": """
+Generate a comprehensive and detailed answer suitable for a
+10-mark university examination question.
 
-Question: Write the second question here?
+TARGET LENGTH:
+Approximately 400-500 words, depending on the amount of
+relevant information available in the retrieved context.
 
-A) First option
-B) Second option
-C) Third option
-D) Fourth option
+FOLLOW THIS STRUCTURE:
 
-Continue in the same format until MCQ 5.
+1. Introduction and Definition:
+   Introduce the topic and explain its meaning clearly.
+   Write a meaningful paragraph.
+
+2. Objectives / Importance:
+   Explain each relevant objective or important point.
+   Do not simply list keywords.
+
+3. Main Explanation:
+   Divide the topic into suitable headings and subheadings.
+   Explain every heading in complete sentences.
+
+4. Detailed Points:
+   For every important numbered point:
+   - Explain what the point means.
+   - Explain why it is important.
+   - Describe its purpose or application.
+   - Include an example if the context provides one.
+
+   Each important point should contain approximately
+   3-5 meaningful sentences wherever the context supports it.
+
+5. Features / Types / Principles / Steps:
+   Include only the sections relevant to the question.
+   Explain every listed feature, type, principle or step.
+   Never provide only a list of headings or keywords.
+
+6. Examples:
+   Include suitable examples only if they are available
+   in the retrieved document context.
+
+7. Advantages / Benefits:
+   Explain the relevant advantages with meaningful details
+   wherever the context contains this information.
+
+8. Conclusion:
+   End with a short paragraph summarising the main idea.
 
 IMPORTANT RULES:
+- Every main heading and subheading must have explanatory content.
+- Do not leave any heading without an explanation.
+- Do not write only bullet points or keywords.
+- Use complete sentences and clear academic language.
+- Maintain a logical flow between sections.
+- Avoid repeating the same information.
+- Do not force irrelevant headings into the answer.
+- Do not invent examples, advantages or facts.
+- Use only information supported by the retrieved context.
+- If the retrieved context does not contain enough information,
+  clearly mention the limitation instead of inventing content.
+""",
 
-1. Generate exactly 5 questions.
-2. Every question must have exactly 4 options.
-3. Put A, B, C and D on separate lines.
-4. Never put two options on the same line.
-5. Do not reveal the correct answer below a question.
-6. Show all five questions before the answer key.
-7. Do not repeat questions.
+        "Bits (MCQs)": """
+Generate exactly 5 multiple-choice questions (MCQs) based
+strictly on the supplied document context.
 
-AFTER ALL FIVE QUESTIONS, SHOW:
+For each question:
+- Provide 4 options: A, B, C and D.
+- Only one option must be correct.
+- Make the questions clear and relevant.
+- Avoid duplicate questions.
 
-ANSWER KEY
-
-1. Correct option letter
-2. Correct option letter
-3. Correct option letter
-4. Correct option letter
-5. Correct option letter
-
-EXPLANATIONS
-
-1. Explanation for question 1.
-2. Explanation for question 2.
-3. Explanation for question 3.
-4. Explanation for question 4.
-5. Explanation for question 5.
-
-Make sure the answers and explanations match the
-questions and options exactly.
-
-Every question, option, answer and explanation must
-come from the supplied document context.
-
-Do not use outside knowledge or invent information.
+After all 5 questions:
+- Provide an Answer Key.
+- Give a short explanation for each correct answer.
+- Ensure every correct answer is supported by the context.
 """
     }
 
+    # System instructions
     system_prompt = """
-You are StudyMate, a careful study assistant.
+You are DocuMind AI, a careful document-based study assistant.
 
-Use ONLY the supplied document context to answer.
+Your main responsibility is to help students prepare examination
+answers using their uploaded study materials.
 
-Do not use outside knowledge, assumptions, or invented facts.
+STRICT RULES:
 
-If the context does not contain enough information, clearly say:
+1. Use ONLY the supplied retrieved document context.
+2. Do not use outside knowledge or assumptions.
+3. Never invent facts, definitions, examples or explanations.
+4. If the context does not contain enough information, clearly say:
 
-'The uploaded documents do not provide enough information to answer this question.'
+"The uploaded documents do not provide enough information
+to answer this question."
 
-You may combine relevant statements from multiple retrieved
-passages, but do not change their meaning.
+5. You may combine relevant information from multiple retrieved
+passages without changing their original meaning.
 
-For MCQs, every question, option, correct answer and explanation
-must be supported by the context.
+6. Follow the answer format selected by the student.
 
-Do not pretend that a statement came from a document if it is
-not present there.
+7. For 5-mark and 10-mark answers, explain every important
+heading and subheading in complete sentences.
+
+8. Never provide only headings, keywords or unexplained
+bullet points when a detailed answer is requested.
+
+9. Use simple academic English suitable for university examinations.
+
+10. For MCQs, every question, option, correct answer and
+explanation must be supported by the supplied context.
+
+11. Do not pretend that information came from a document
+if it is not present in the retrieved context.
 """
 
+    # User prompt
     user_prompt = f"""
-Answer format: {formats[answer_type]}
+Selected Answer Format:
+{answer_type}
 
-Student question:
+Answer Instructions:
+{formats[answer_type]}
+
+Student Question:
 {question}
 
-Retrieved document context:
+Retrieved Document Context:
 {context}
 
-Write the answer now. Stay strictly within the context.
+Generate the answer now.
+
+Important:
+Follow the selected answer format carefully.
+For 10-mark answers, explain every heading and point in detail.
+Do not provide headings without explanations.
+Use only the retrieved document context.
 """
 
-    result = client.models.generate_content(
+    # Create Groq client
+    client = get_client()
+
+    # Generate response using Groq
+    result = client.chat.completions.create(
         model=CHAT_MODEL,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.1
-        )
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": user_prompt
+            }
+        ],
+        temperature=0.1,
+        max_completion_tokens=4096
     )
 
-    answer = result.text or ""
+    answer = result.choices[0].message.content or ""
 
-    # Apply special formatting only to MCQ answers
+    # Format MCQ response
     if answer_type == "Bits (MCQs)":
+
         answer = format_mcq_output(answer)
 
-    return answer, []
+    return answer, passages
 
 
+# Clear document index from Streamlit session
 def clear_session_index():
+
     for key in [
         "rag_chunks",
         "rag_metadata",
         "rag_vectors",
         "doc_ready"
     ]:
+
         st.session_state.pop(key, None)
